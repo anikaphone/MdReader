@@ -1,0 +1,6 @@
+# 项目级 Cargo 构建配置
+# 使用 LLVM 的 lld-link 替换 MSVC 默认链接器，提升链接速度
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
+
