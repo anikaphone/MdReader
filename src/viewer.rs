@@ -156,6 +156,7 @@ struct DefinitionList {
 #[derive(Debug, Default)]
 pub struct CommonMarkViewer<'f> {
     options: CommonMarkOptions<'f>,
+    zoom_factor: Option<f32>,
     search_query: Option<String>,
     active_match_index: Option<usize>,
     base_dir: Option<PathBuf>,
@@ -164,6 +165,11 @@ pub struct CommonMarkViewer<'f> {
 impl<'f> CommonMarkViewer<'f> {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn zoom_factor(mut self, zoom_factor: f32) -> Self {
+        self.zoom_factor = Some(zoom_factor.clamp(0.5, 3.0));
+        self
     }
 
     pub fn base_dir<P: Into<PathBuf>>(mut self, dir: Option<P>) -> Self {
@@ -201,6 +207,7 @@ impl<'f> CommonMarkViewer<'f> {
         egui_commonmark_backend::prepare_show(cache, ui.ctx());
 
         let mut internal = CommonMarkViewerInternal::new();
+        internal.zoom_factor = self.zoom_factor.unwrap_or(1.0);
         internal.search_query = self.search_query.filter(|q| !q.trim().is_empty());
         internal.active_match_index = self.active_match_index;
         internal.base_dir = self.base_dir;
@@ -212,6 +219,8 @@ impl<'f> CommonMarkViewer<'f> {
 
 pub struct CommonMarkViewerInternal {
     curr_table: usize,
+    curr_code_block: usize,
+    zoom_factor: f32,
     text_style: Style,
     list: List,
     link: Option<Link>,
@@ -242,6 +251,8 @@ impl CommonMarkViewerInternal {
     pub fn new() -> Self {
         Self {
             curr_table: 0,
+            curr_code_block: 0,
+            zoom_factor: 1.0,
             text_style: Style::default(),
             list: List::default(),
             link: None,
@@ -290,6 +301,21 @@ impl CommonMarkViewerInternal {
         let layout = egui::Layout::left_to_right(egui::Align::BOTTOM).with_main_wrap(true);
 
         let re = ui.allocate_ui_with_layout(egui::vec2(max_width, 0.0), layout, |ui| {
+            // Scale the document style inside this child only. The app's title bar,
+            // status bar, TOC and search controls retain their original style.
+            let style = ui.style_mut();
+            for font in style.text_styles.values_mut() {
+                font.size *= self.zoom_factor;
+            }
+            if let Some(font) = &mut style.override_font_id {
+                font.size *= self.zoom_factor;
+            }
+            style.spacing.item_spacing *= self.zoom_factor;
+            style.spacing.extra_text_line_spacing *= self.zoom_factor;
+            style.spacing.indent *= self.zoom_factor;
+            style.spacing.icon_width *= self.zoom_factor;
+            style.spacing.icon_width_inner *= self.zoom_factor;
+            style.spacing.icon_spacing *= self.zoom_factor;
             ui.spacing_mut().item_spacing.x = 0.0;
             let height = ui.text_style_height(&TextStyle::Body);
             ui.set_row_height(height);
@@ -481,44 +507,56 @@ impl CommonMarkViewerInternal {
 
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 let Table { header, rows } = parse_table(events);
+                // Tables keep their natural cell widths and get a local horizontal
+                // scrollbar, matching Markdown readers that preserve table layout.
+                egui::ScrollArea::horizontal()
+                    .auto_shrink([false, false])
+                    .id_salt(id.with("_horizontal_scroll"))
+                    .show(ui, |ui| {
+                        egui::Grid::new(id).striped(true).show(ui, |ui| {
+                            for col in header {
+                                ui.horizontal(|ui| {
+                                    for (e, src_span) in col {
+                                        let tmp_start = std::mem::replace(
+                                            &mut self.line.should_start_newline,
+                                            false,
+                                        );
+                                        let tmp_end = std::mem::replace(
+                                            &mut self.line.should_end_newline,
+                                            false,
+                                        );
+                                        self.event(ui, e, src_span, cache, options, max_width);
+                                        self.line.should_start_newline = tmp_start;
+                                        self.line.should_end_newline = tmp_end;
+                                    }
+                                });
+                            }
 
-                egui::Grid::new(id).striped(true).show(ui, |ui| {
-                    for col in header {
-                        ui.horizontal(|ui| {
-                            for (e, src_span) in col {
-                                let tmp_start =
-                                    std::mem::replace(&mut self.line.should_start_newline, false);
-                                let tmp_end =
-                                    std::mem::replace(&mut self.line.should_end_newline, false);
-                                self.event(ui, e, src_span, cache, options, max_width);
-                                self.line.should_start_newline = tmp_start;
-                                self.line.should_end_newline = tmp_end;
+                            ui.end_row();
+
+                            for row in rows {
+                                for col in row {
+                                    ui.horizontal(|ui| {
+                                        for (e, src_span) in col {
+                                            let tmp_start = std::mem::replace(
+                                                &mut self.line.should_start_newline,
+                                                false,
+                                            );
+                                            let tmp_end = std::mem::replace(
+                                                &mut self.line.should_end_newline,
+                                                false,
+                                            );
+                                            self.event(ui, e, src_span, cache, options, max_width);
+                                            self.line.should_start_newline = tmp_start;
+                                            self.line.should_end_newline = tmp_end;
+                                        }
+                                    });
+                                }
+
+                                ui.end_row();
                             }
                         });
-                    }
-
-                    ui.end_row();
-
-                    for row in rows {
-                        for col in row {
-                            ui.horizontal(|ui| {
-                                for (e, src_span) in col {
-                                    let tmp_start = std::mem::replace(
-                                        &mut self.line.should_start_newline,
-                                        false,
-                                    );
-                                    let tmp_end =
-                                        std::mem::replace(&mut self.line.should_end_newline, false);
-                                    self.event(ui, e, src_span, cache, options, max_width);
-                                    self.line.should_start_newline = tmp_start;
-                                    self.line.should_end_newline = tmp_end;
-                                }
-                            });
-                        }
-
-                        ui.end_row();
-                    }
-                });
+                    });
             });
 
             self.is_table = false;
@@ -607,7 +645,15 @@ impl CommonMarkViewerInternal {
         } else if let Some(link) = &mut self.link {
             link.text.push(rich_text);
         } else {
-            let resp = ui.label(rich_text);
+            // Inline code and highlighted fragments are emitted as separate labels.
+            // Force normal prose to honor the paragraph width. Table cells keep
+            // their natural width and are handled by the table's local scroller.
+            let label = egui::Label::new(rich_text);
+            let resp = if self.is_table {
+                ui.add(label.extend())
+            } else {
+                ui.add(label.wrap())
+            };
             if is_active_search {
                 resp.scroll_to_me(Some(egui::Align::Center));
             }
@@ -850,7 +896,18 @@ impl CommonMarkViewerInternal {
             }
             pulldown_cmark::TagEnd::Image => {
                 if let Some(image) = self.image.take() {
-                    image.end(ui, options);
+                    let response = ui.add(
+                        egui::Image::from_uri(&image.uri)
+                            .fit_to_original_size(self.zoom_factor)
+                            .max_width(options.max_width(ui)),
+                    );
+                    if !image.alt_text.is_empty() && options.show_alt_text_on_hover {
+                        response.on_hover_ui_at_pointer(|ui| {
+                            for alt in image.alt_text {
+                                ui.label(alt);
+                            }
+                        });
+                    }
                 }
             }
             pulldown_cmark::TagEnd::HtmlBlock => {
@@ -875,8 +932,24 @@ impl CommonMarkViewerInternal {
         max_width: f32,
     ) {
         if let Some(block) = self.code_block.take() {
+            let id = ui.id().with("_code_block").with(self.curr_code_block);
+            self.curr_code_block += 1;
+
             ui.scope(|ui| {
-                render_custom_code_block(ui, max_width, block.lang.as_deref(), &block.content, options);
+                // Code lines keep their natural width. The local horizontal scroll area
+                // prevents a long line from changing the document's wrapping width.
+                egui::ScrollArea::horizontal()
+                    .auto_shrink([false, false])
+                    .id_salt(id.with("_horizontal_scroll"))
+                    .show(ui, |ui| {
+                        render_custom_code_block(
+                            ui,
+                            max_width,
+                            block.lang.as_deref(),
+                            &block.content,
+                            options,
+                        );
+                    });
             });
             self.line.try_insert_end(ui);
         }
@@ -929,7 +1002,7 @@ fn render_custom_code_block(
             .or_else(|| SYNTAX_SET.find_syntax_by_extension(l))
     });
 
-    let mut layouter = |ui: &Ui, string: &dyn egui::TextBuffer, wrap_width: f32| {
+    let mut layouter = |ui: &Ui, string: &dyn egui::TextBuffer, _wrap_width: f32| {
         let mut job = egui::text::LayoutJob::default();
         if let (Some(syntax), Some(theme)) = (syntax, theme) {
             let mut h = syntect::easy::HighlightLines::new(syntax, theme);
@@ -966,7 +1039,8 @@ fn render_custom_code_block(
                 ),
             );
         }
-        job.wrap.max_width = wrap_width;
+        // Never wrap code lines. The enclosing horizontal ScrollArea handles overflow.
+        job.wrap.max_width = f32::INFINITY;
         ui.fonts_mut(|f| f.layout_job(job))
     };
 
@@ -981,9 +1055,28 @@ fn render_custom_code_block(
         bottom: 10_i8,
     };
 
+    // Expand the code block to the longest source line so the enclosing
+    // horizontal ScrollArea can expose the full line instead of clipping it.
+    let code_font = TextStyle::Monospace.resolve(ui.style());
+    let text_color = ui.visuals().text_color();
+    let longest_line_width = ui.fonts_mut(|fonts| {
+        text.split('\n')
+            .map(|line| {
+                fonts
+                    .layout_no_wrap(line.to_owned(), code_font.clone(), text_color)
+                    .size()
+                    .x
+            })
+            .fold(0.0_f32, f32::max)
+    });
+    let desired_width = max_width.max(longest_line_width + inner_margin.sum().x);
+    // TextEdit otherwise clamps its allocation to the viewport width. Expand
+    // the scroll area's child first so the natural code width is preserved.
+    ui.set_min_width(desired_width);
+
     let output = egui::TextEdit::multiline(&mut text)
         .layouter(&mut layouter)
-        .desired_width(max_width)
+        .desired_width(desired_width)
         .desired_rows(1)
         .margin(inner_margin)
         .show(ui);
@@ -1005,10 +1098,13 @@ fn render_custom_code_block(
         ),
     );
 
-    // Copy icon positioned at top right without disturbing parent layout cursor
+    // Keep the copy icon pinned to the visible right edge. For a long code line,
+    // frame_rect.right() is outside the viewport until the user scrolls all the
+    // way to the end, which would make the button appear to be missing.
     let button_size = egui::vec2(22.0, 22.0);
+    let button_right = frame_rect.right().min(ui.clip_rect().right() - 6.0);
     let button_rect = egui::Rect::from_min_size(
-        egui::pos2(frame_rect.right() - 28.0, frame_rect.top() + 6.0),
+        egui::pos2(button_right - button_size.x, frame_rect.top() + 6.0),
         button_size,
     );
 
@@ -1022,7 +1118,7 @@ fn render_custom_code_block(
     );
     let copy_button = button_ui
         .add(
-            egui::Button::new(if copied_icon { "✔" } else { "🗐" })
+            egui::Button::new(egui::RichText::new(if copied_icon { "✔" } else { "🗐" }).size(14.0))
                 .small()
                 .frame(false)
                 .fill(Color32::TRANSPARENT),
@@ -1059,6 +1155,56 @@ fn render_custom_code_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_document_zoom_scales_text_without_changing_chrome() {
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+        for zoom in [0.5, 1.0, 2.1, 3.0] {
+            for _ in 0..2 {
+                let mut expected_fonts = Vec::new();
+                let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    ui.set_width(600.0);
+                    let body = TextStyle::Body.resolve(ui.style()).size;
+                    let heading = TextStyle::Heading.resolve(ui.style()).size;
+                    let code = TextStyle::Monospace.resolve(ui.style()).size;
+                    ui.label("chrome before");
+                    let mut cache = CommonMarkCache::default();
+                    let response = CommonMarkViewer::new().zoom_factor(zoom).show(
+                        ui,
+                        &mut cache,
+                        "# Document heading\n\nDocument body\n\n```rust\nlet value = 42;\n```",
+                    );
+                    assert!(response.response.rect.width() <= 600.0 + 0.01);
+                    assert_eq!(TextStyle::Body.resolve(ui.style()).size, body);
+                    ui.label("chrome after");
+                    expected_fonts = vec![
+                        ("chrome before", body),
+                        ("chrome after", body),
+                        ("Document heading", heading * zoom),
+                        ("Document body", body * zoom),
+                        ("let value = 42;", code * zoom),
+                    ];
+                });
+                for (text, expected_size) in expected_fonts {
+                    let galley = output.shapes.iter().find_map(|shape| {
+                        if let egui::Shape::Text(text_shape) = &shape.shape {
+                            if text_shape.galley.job.text == text {
+                                return Some(&text_shape.galley);
+                            }
+                        }
+                        None
+                    }).unwrap_or_else(|| panic!("Missing rendered text: {text}"));
+                    for section in &galley.job.sections {
+                        assert!((section.format.font_id.size - expected_size).abs() < 0.01,
+                            "{text}: zoom={zoom}, expected={expected_size}, actual={}", section.format.font_id.size);
+                    }
+                }
+                assert_eq!(ctx.zoom_factor(), 1.0);
+                output.textures_delta.clear();
+            }
+        }
+    }
 
     #[test]
     fn test_resolve_image_url() {

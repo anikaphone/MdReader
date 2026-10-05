@@ -101,10 +101,10 @@ impl MdReaderApp {
             last_applied_theme: None,
         };
 
-        // Apply saved zoom factor immediately on launch
-        if (app.config.zoom_factor - 1.0).abs() > 0.001 {
-            ctx.set_zoom_factor(app.config.zoom_factor);
-        }
+        // Document zoom is applied by the Markdown viewer, never to the app chrome.
+        // Disable egui's built-in shortcuts so they cannot also zoom the whole window.
+        ctx.options_mut(|options| options.zoom_with_keyboard = false);
+        ctx.set_zoom_factor(1.0);
 
         // Apply saved theme immediately on launch
         app.apply_theme(ctx);
@@ -124,11 +124,9 @@ impl MdReaderApp {
         let clean_zoom = ((new_zoom * 10.0).round() / 10.0).clamp(0.5, 3.0);
         if (clean_zoom - self.config.zoom_factor).abs() > 0.001 {
             self.config.zoom_factor = clean_zoom;
-            ctx.set_zoom_factor(clean_zoom);
-            // Drop dead font atlas from previous zoom level so it does not accumulate in RAM
-            ctx.set_fonts(ctx.fonts(|f| f.definitions().clone()));
             self.config.save();
             self.last_zoom_change = Some(Instant::now());
+            ctx.request_repaint();
         }
     }
 
@@ -649,30 +647,26 @@ impl eframe::App for MdReaderApp {
 
         // Bottom Status Bar
         egui::Panel::bottom("bottom_panel").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                // Toast notification or file path
-                if let Some((msg, time)) = &self.status_toast {
-                    if time.elapsed().as_secs() < 3 {
-                        ui.label(egui::RichText::new(format!("ℹ {}", msg)).color(ui.visuals().warn_fg_color));
-                    } else {
-                        self.status_toast = None;
-                    }
-                } else if let Some(path) = &self.file_path {
-                    ui.label(egui::RichText::new(path.to_string_lossy()).weak());
-                } else {
-                    ui.label(egui::RichText::new("就绪").weak());
-                }
+            if self.status_toast.as_ref().is_some_and(|(_, time)| time.elapsed().as_secs() >= 3) {
+                self.status_toast = None;
+            }
+            let message = if let Some((msg, _)) = &self.status_toast {
+                egui::RichText::new(format!("ℹ {}", msg)).color(ui.visuals().warn_fg_color)
+            } else if let Some(path) = &self.file_path {
+                egui::RichText::new(display_path(path)).weak()
+            } else {
+                egui::RichText::new("就绪").weak()
+            };
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let reload_str = if self.config.auto_reload { "热重载: 开启" } else { "热重载: 关闭" };
-                    ui.label(egui::RichText::new(format!("{} | 缩放: {:.0}%", reload_str, self.config.zoom_factor * 100.0)).weak());
-
-                    if self.file_path.is_some() {
-                        let size_kb = self.file_size_bytes as f64 / 1024.0;
-                        ui.label(egui::RichText::new(format!("UTF-8 | {} 词 | {} 行 | {:.1} KB |", self.word_count, self.line_count, size_kb)).weak());
-                    }
-                });
-            });
+            let reload_str = if self.config.auto_reload { "热重载: 开启" } else { "热重载: 关闭" };
+            let summary = format!("{} | 缩放: {:.0}%", reload_str, self.config.zoom_factor * 100.0);
+            let details = if self.file_path.is_some() {
+                let size_kb = self.file_size_bytes as f64 / 1024.0;
+                format!("UTF-8 | {} 词 | {} 行 | {:.1} KB | {}", self.word_count, self.line_count, size_kb, summary)
+            } else {
+                summary.clone()
+            };
+            render_status_row(ui, message, &details, &summary);
         });
 
         // Left TOC Sidebar
@@ -757,6 +751,8 @@ impl eframe::App for MdReaderApp {
                     }
                 });
             } else {
+                // Keep the document viewport width stable so normal prose wraps
+                // consistently when the TOC or zoom level changes.
                 let mut scroll_area = egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .id_salt("markdown_scroll_area");
@@ -779,6 +775,7 @@ impl eframe::App for MdReaderApp {
                         .and_then(|p| p.parent().map(|d| d.to_path_buf()));
 
                     let viewer = CommonMarkViewer::new()
+                        .zoom_factor(self.config.zoom_factor)
                         .base_dir(base_dir)
                         .enable_scroll_to_heading(true)
                         .syntax_theme_dark("base16-ocean.dark")
@@ -797,7 +794,9 @@ impl eframe::App for MdReaderApp {
                         ui.add_space(horizontal_margin);
                         ui.vertical(|ui| {
                             let content_width = (available_width - horizontal_margin * 2.0).max(200.0);
-                            ui.set_max_width(content_width);
+                            // Give the Markdown renderer a real wrapping width. A max-only
+                            // constraint lets long paragraphs grow past the central panel.
+                            ui.set_width(content_width);
                             ui.add_space(18.0);
                             viewer.show(ui, &mut self.cache, &self.rendered_markdown);
                             ui.add_space(60.0);
@@ -932,6 +931,79 @@ impl eframe::App for MdReaderApp {
                 egui::StrokeKind::Inside,
             );
         }
+    }
+}
+
+fn render_status_row(
+    ui: &mut egui::Ui,
+    message: egui::RichText,
+    details: &str,
+    summary: &str,
+) -> (egui::Response, egui::Response) {
+    let available_width = ui.available_width();
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let color = ui.visuals().weak_text_color();
+    let measure = |text: &str| {
+        ui.fonts_mut(|fonts| fonts.layout_no_wrap(text.to_owned(), font.clone(), color).size().x)
+    };
+    // Keep some room for the path. On narrow windows the complete statistics
+    // remain available in a tooltip while reload and zoom stay on the bar.
+    let full_width = measure(details);
+    let info = if full_width <= available_width * 0.75 { details } else { summary };
+    let info_width = measure(info).ceil().min(available_width);
+    let gap = ui.spacing().item_spacing.x.min((available_width - info_width).max(0.0));
+    let message_width = (available_width - info_width - gap).max(0.0);
+    let height = ui.text_style_height(&egui::TextStyle::Body);
+    let (bar_rect, _) = ui.allocate_exact_size(
+        egui::vec2(available_width, height),
+        egui::Sense::hover(),
+    );
+
+    // Use dedicated left/right child layouts. `add_sized` centers its child
+    // widget, which made a long path look centered even with a wide label.
+    let message_rect = egui::Rect::from_min_size(
+        bar_rect.left_top(),
+        egui::vec2(message_width, height),
+    );
+    let info_rect = egui::Rect::from_min_size(
+        egui::pos2(bar_rect.right() - info_width, bar_rect.top()),
+        egui::vec2(info_width, height),
+    );
+    let mut message_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("status_message")
+            .max_rect(message_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    let message_response = message_ui.add(
+        egui::Label::new(message)
+            .truncate()
+            .halign(egui::Align::LEFT),
+    );
+    let mut info_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("status_info")
+            .max_rect(info_rect)
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    let info_response = info_ui
+        .add(
+            egui::Label::new(egui::RichText::new(info).weak())
+                .truncate()
+                .halign(egui::Align::RIGHT),
+        )
+        .on_hover_text(details);
+    (message_response, info_response)
+}
+
+fn display_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if let Some(rest) = path.strip_prefix("\\\\?\\UNC\\") {
+        format!("\\\\{rest}")
+    } else if let Some(rest) = path.strip_prefix("\\\\?\\") {
+        rest.to_owned()
+    } else {
+        path.into_owned()
     }
 }
 
@@ -1163,6 +1235,56 @@ mod tests {
         let (file_part2, fragment2) = in_page.split_once('#').map(|(f, frag)| (f, Some(frag))).unwrap_or((in_page, None));
         assert_eq!(file_part2, "");
         assert_eq!(fragment2, Some("top"));
+    }
+
+    #[test]
+    fn test_status_row_keeps_long_paths_separate_from_statistics() {
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+        for width in [500.0, 1040.0] {
+            for _ in 0..2 {
+                let mut left_edge = 0.0;
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 750.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut output = ctx.run_ui(input, |ui| {
+                    left_edge = ui.max_rect().left();
+                    egui::Panel::bottom("status_panel").show(ui, |ui| {
+                        let right_edge = ui.max_rect().right();
+                        let (path, info) = render_status_row(
+                            ui,
+                            egui::RichText::new(r"D:\Project\Applications\MdReader\很长的目录名称\编辑功能开发计划.md").weak(),
+                            "UTF-8 | 7698 词 | 414 行 | 17.2 KB | 热重载: 开启 | 缩放: 210%",
+                            "热重载: 开启 | 缩放: 210%",
+                        );
+                        assert!(path.rect.right() <= info.rect.left());
+                        assert!(info.rect.right() <= right_edge + 0.01);
+                        assert!(path.rect.height() < 30.0);
+                    });
+                });
+                let path_shape = output.shapes.iter().find_map(|shape| {
+                    if let egui::Shape::Text(text_shape) = &shape.shape {
+                        if text_shape.galley.job.text.contains("D:\\Project\\Applications") {
+                            return Some(text_shape);
+                        }
+                    }
+                    None
+                }).expect("status path should be rendered");
+                assert!(path_shape.pos.x <= left_edge + 16.0, "path is not left aligned: x={}", path_shape.pos.x);
+                output.textures_delta.clear();
+            }
+        }
+    }
+
+    #[test]
+    fn test_display_path_removes_windows_extended_prefix() {
+        assert_eq!(display_path(Path::new(r"\\?\D:\Project\demo.md")), r"D:\Project\demo.md");
+        assert_eq!(display_path(Path::new(r"\\?\UNC\server\share\demo.md")), r"\\server\share\demo.md");
+        assert_eq!(display_path(Path::new(r"D:\Project\demo.md")), r"D:\Project\demo.md");
     }
 
     #[test]
