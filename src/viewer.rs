@@ -33,6 +33,15 @@ pub fn resolve_image_url(url: &str, base_dir: Option<&Path>) -> String {
 
     if cfg!(windows) {
         let clean = full_path.to_string_lossy().replace('\\', "/");
+        // canonicalize() returns extended Windows paths. The file loader expects
+        // a drive path or a UNC authority, not a URI containing the device prefix.
+        if let Some(unc) = clean.strip_prefix("//?/UNC/") {
+            return format!("file://{unc}");
+        }
+        let clean = clean.strip_prefix("//?/").unwrap_or(&clean);
+        if clean.starts_with("//") {
+            return format!("file:{clean}");
+        }
         let clean = clean.trim_start_matches('/');
         format!("file:///{clean}")
     } else {
@@ -1223,6 +1232,122 @@ mod tests {
             assert!(resolved.starts_with("file://"));
             assert!(resolved.ends_with("images/pic.png"));
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_resolve_image_url_handles_windows_extended_and_unc_paths() {
+        for (base, expected) in [
+            (r"C:\docs", "file:///C:/docs/images/pic.png"),
+            (r"\\?\C:\docs", "file:///C:/docs/images/pic.png"),
+            (r"\\server\share\docs", "file://server/share/docs/images/pic.png"),
+            (r"\\?\UNC\server\share\docs", "file://server/share/docs/images/pic.png"),
+        ] {
+            assert_eq!(resolve_image_url("images/pic.png", Some(Path::new(base))), expected);
+        }
+    }
+
+    #[test]
+    fn test_local_image_loader_can_read_project_asset() {
+        let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
+        let base_dir = Path::new(env!("CARGO_MANIFEST_DIR")).canonicalize().unwrap();
+        let uri = resolve_image_url(
+            "assets/preview-light.png",
+            Some(&base_dir),
+        );
+
+        let mut loaded = false;
+        for _ in 0..200 {
+            match ctx.try_load_image(&uri, egui::load::SizeHint::default()) {
+                Ok(egui::load::ImagePoll::Ready { image }) => {
+                    assert!(image.size[0] > 0 && image.size[1] > 0);
+                    loaded = true;
+                    break;
+                }
+                Ok(egui::load::ImagePoll::Pending { .. }) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("failed to load {uri}: {error:?}"),
+            }
+        }
+        assert!(loaded, "image loader did not finish loading {uri}");
+    }
+
+    #[test]
+    fn test_http_image_loader_fetches_svg() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+
+        // Serve a badge-like SVG locally so this test needs no external service.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let uri = format!("http://{}/badge.svg", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "HTTP image request was not sent");
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("HTTP test server failed: {error}"),
+                }
+            };
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut request = [0; 4096];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="8"><rect width="16" height="8" fill="blue"/></svg>"#;
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: image/svg+xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{svg}", svg.len()).unwrap();
+        });
+
+        let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
+        let mut loaded = false;
+        for _ in 0..200 {
+            match ctx.try_load_image(&uri, egui::load::SizeHint::default()) {
+                Ok(egui::load::ImagePoll::Ready { image }) => {
+                    assert_eq!(image.size, [16, 8]);
+                    loaded = true;
+                    break;
+                }
+                Ok(egui::load::ImagePoll::Pending { .. }) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("failed to load HTTP image: {error:?}"),
+            }
+        }
+        server.join().unwrap();
+        assert!(loaded, "HTTP image did not finish loading");
+    }
+
+    #[test]
+    fn test_local_markdown_image_renders_in_viewer() {
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+        let mut cache = CommonMarkCache::default();
+        let base_dir = Path::new(env!("CARGO_MANIFEST_DIR")).canonicalize().unwrap();
+        let mut rendered_image = false;
+        for _ in 0..200 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(600.0);
+                CommonMarkViewer::new()
+                    .base_dir(Some(&base_dir))
+                    .show(ui, &mut cache, "![preview](assets/preview-light.png)");
+            });
+            rendered_image |= output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Rect(rect) if rect.brush.is_some())
+            });
+            output.textures_delta.clear();
+            if rendered_image {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(rendered_image, "local Markdown image was not rendered");
     }
 
     #[test]
