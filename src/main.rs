@@ -69,6 +69,7 @@ fn main() -> eframe::Result<()> {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("MdReader")
+        .with_decorations(false)
         .with_inner_size([1040.0, 750.0])
         .with_min_inner_size([500.0, 380.0])
         .with_drag_and_drop(true);

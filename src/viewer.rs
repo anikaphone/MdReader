@@ -870,14 +870,189 @@ impl CommonMarkViewerInternal {
     fn end_code_block(
         &mut self,
         ui: &mut Ui,
-        cache: &mut CommonMarkCache,
+        _cache: &mut CommonMarkCache,
         options: &CommonMarkOptions,
         max_width: f32,
     ) {
         if let Some(block) = self.code_block.take() {
-            block.end(ui, cache, options, max_width);
+            ui.scope(|ui| {
+                render_custom_code_block(ui, max_width, block.lang.as_deref(), &block.content, options);
+            });
             self.line.try_insert_end(ui);
         }
+    }
+}
+
+fn render_custom_code_block(
+    ui: &mut Ui,
+    max_width: f32,
+    lang: Option<&str>,
+    content: &str,
+    options: &CommonMarkOptions,
+) {
+    use egui::TextBuffer as _;
+    let mut text = content.strip_suffix('\n').unwrap_or(content);
+
+    let is_dark = ui.style().visuals.dark_mode;
+    let theme_name = if is_dark {
+        if !options.theme_dark.is_empty() {
+            &options.theme_dark
+        } else {
+            "base16-ocean.dark"
+        }
+    } else {
+        if !options.theme_light.is_empty() {
+            &options.theme_light
+        } else {
+            "base16-ocean.light"
+        }
+    };
+
+    static SYNTAX_SET: std::sync::LazyLock<syntect::parsing::SyntaxSet> =
+        std::sync::LazyLock::new(syntect::parsing::SyntaxSet::load_defaults_newlines);
+    static THEME_SET: std::sync::LazyLock<syntect::highlighting::ThemeSet> =
+        std::sync::LazyLock::new(syntect::highlighting::ThemeSet::load_defaults);
+
+    let theme = THEME_SET
+        .themes
+        .get(theme_name)
+        .or_else(|| THEME_SET.themes.get(if is_dark { "base16-ocean.dark" } else { "base16-ocean.light" }));
+
+    let bg_color = theme
+        .and_then(|t| t.settings.background)
+        .map(|c| Color32::from_rgb(c.r, c.g, c.b))
+        .unwrap_or_else(|| ui.visuals().extreme_bg_color);
+
+    let syntax = lang.and_then(|l| {
+        SYNTAX_SET
+            .find_syntax_by_token(l)
+            .or_else(|| SYNTAX_SET.find_syntax_by_extension(l))
+    });
+
+    let mut layouter = |ui: &Ui, string: &dyn egui::TextBuffer, wrap_width: f32| {
+        let mut job = egui::text::LayoutJob::default();
+        if let (Some(syntax), Some(theme)) = (syntax, theme) {
+            let mut h = syntect::easy::HighlightLines::new(syntax, theme);
+            for line in syntect::util::LinesWithEndings::from(string.as_str()) {
+                if let Ok(ranges) = h.highlight_line(line, &SYNTAX_SET) {
+                    for (style, text_segment) in ranges {
+                        job.append(
+                            text_segment,
+                            0.0,
+                            egui::TextFormat::simple(
+                                TextStyle::Monospace.resolve(ui.style()),
+                                Color32::from_rgb(style.foreground.r, style.foreground.g, style.foreground.b),
+                            ),
+                        );
+                    }
+                } else {
+                    job.append(
+                        line,
+                        0.0,
+                        egui::TextFormat::simple(
+                            TextStyle::Monospace.resolve(ui.style()),
+                            ui.style().visuals.text_color(),
+                        ),
+                    );
+                }
+            }
+        } else {
+            job.append(
+                string.as_str(),
+                0.0,
+                egui::TextFormat::simple(
+                    TextStyle::Monospace.resolve(ui.style()),
+                    ui.style().visuals.text_color(),
+                ),
+            );
+        }
+        job.wrap.max_width = wrap_width;
+        ui.fonts_mut(|f| f.layout_job(job))
+    };
+
+    // Pre-allocate background placeholder
+    let where_to_put_background = ui.painter().add(egui::Shape::Noop);
+
+    // Comfortable margin/padding: 14px left, 38px right, 10px top, 10px bottom
+    let inner_margin = egui::Margin {
+        left: 14_i8,
+        right: 38_i8,
+        top: 10_i8,
+        bottom: 10_i8,
+    };
+
+    let output = egui::TextEdit::multiline(&mut text)
+        .layouter(&mut layouter)
+        .desired_width(max_width)
+        .desired_rows(1)
+        .margin(inner_margin)
+        .show(ui);
+
+    let frame_rect = output.response.rect;
+
+    // Background color + rounded border (output.response.rect already includes inner_margin)
+    let corner_radius = ui.style().noninteractive().corner_radius;
+    let border_stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+
+    ui.painter().set(
+        where_to_put_background,
+        egui::epaint::RectShape::new(
+            frame_rect,
+            corner_radius,
+            bg_color,
+            border_stroke,
+            egui::StrokeKind::Outside,
+        ),
+    );
+
+    // Copy icon positioned at top right without disturbing parent layout cursor
+    let button_size = egui::vec2(22.0, 22.0);
+    let button_rect = egui::Rect::from_min_size(
+        egui::pos2(frame_rect.right() - 28.0, frame_rect.top() + 6.0),
+        button_size,
+    );
+
+    let persistent_id = ui.make_persistent_id(output.response.id);
+    let copied_icon = ui.memory_mut(|m| *m.data.get_temp_mut_or_default::<bool>(persistent_id));
+
+    let mut button_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(button_rect)
+            .layout(egui::Layout::centered_and_justified(egui::Direction::TopDown)),
+    );
+    let copy_button = button_ui
+        .add(
+            egui::Button::new(if copied_icon { "✔" } else { "🗐" })
+                .small()
+                .frame(false)
+                .fill(Color32::TRANSPARENT),
+        )
+        .on_hover_cursor(
+            ui.visuals()
+                .interact_cursor
+                .unwrap_or(egui::CursorIcon::Default),
+        );
+
+    if copied_icon && !copy_button.hovered() {
+        ui.memory_mut(|m| *m.data.get_temp_mut_or_default(persistent_id) = false);
+    }
+    if !copied_icon && copy_button.clicked() {
+        ui.memory_mut(|m| *m.data.get_temp_mut_or_default(persistent_id) = true);
+    }
+
+    if copy_button.clicked() {
+        let copy_text = if let Some(cursor) = output.cursor_range {
+            let selected_chars = cursor.as_sorted_char_range();
+            let selected_text = text.char_range(selected_chars);
+            if selected_text.is_empty() {
+                text.to_owned()
+            } else {
+                selected_text.to_owned()
+            }
+        } else {
+            text.to_owned()
+        };
+        ui.copy_text(copy_text);
     }
 }
 
@@ -902,5 +1077,64 @@ mod tests {
             assert!(resolved.starts_with("file://"));
             assert!(resolved.ends_with("images/pic.png"));
         }
+    }
+
+    #[test]
+    fn test_code_blocks_layout() {
+        let md = r#"
+# 3. 代码块语法高亮
+
+```rust
+// Rust 示例代码
+use std::time::Instant;
+
+fn measure_startup_speed() {
+    let start = Instant::now();
+    println!("MdReader 极速加载完成！");
+    let elapsed = start.elapsed();
+    println!("耗时: {:?}", elapsed);
+}
+```
+
+```python
+# Python 示例代码
+def calculate_memory_footprint():
+    """验证原生 Rust 与 Chromium 内存占用对比"""
+    native_rust_ram_mb = 18.5
+    webview2_ram_mb = 120.0
+    saved_ratio = (webview2_ram_mb - native_rust_ram_mb) / webview2_ram_mb
+    print(f"原生模式节省了 {saved_ratio * 100:.1f}% 的内存！")
+```
+
+```json
+{
+  "application": "MdReader",
+  "version": "0.1.0",
+  "platform": "Windows x64",
+  "features": [
+    "instant_startup",
+    "low_memory",
+    "hot_reload",
+    "toc_outline"
+  ]
+}
+```
+
+## 4. 表格排版 (GFM Tables)
+"#;
+        egui::__run_test_ctx(|ctx| {
+            crate::setup_custom_fonts(ctx);
+            // Frame 1 applies font definitions
+            let mut out1 = ctx.run_ui(egui::RawInput::default(), |_| {});
+            out1.textures_delta.clear();
+            // Frame 2 has fonts loaded
+            let mut out2 = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let mut cache = CommonMarkCache::default();
+                let viewer = CommonMarkViewer::new();
+                let resp = viewer.show(ui, &mut cache, md);
+                assert!(resp.response.rect.height() > 300.0, "Response height should expand for all code blocks, got {}", resp.response.rect.height());
+            });
+            out2.textures_delta.clear();
+        });
     }
 }

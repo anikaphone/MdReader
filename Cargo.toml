@@ -21,13 +21,15 @@ serde_json = "1.0"
 dirs = "5.0"
 arboard = "3.4"
 memmap2 = "0.9"
+syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "default-themes"] }
+
 
 [build-dependencies]
 winres = "0.1"
 
 [profile.release]
 opt-level = "z"
-lto = true
-codegen-units = 1
+lto = false
+codegen-units = 16
 panic = "abort"
 strip = true
