@@ -28,6 +28,7 @@ pub struct MdReaderApp {
     pub startup_time: Instant,
     pub trimmed_working_set: bool,
     pub last_zoom_change: Option<Instant>,
+    last_applied_theme: Option<(ThemeMode, egui::SystemTheme)>,
 }
 
 #[cfg(windows)]
@@ -97,6 +98,7 @@ impl MdReaderApp {
             startup_time: Instant::now(),
             trimmed_working_set: false,
             last_zoom_change: None,
+            last_applied_theme: None,
         };
 
         // Apply saved zoom factor immediately on launch
@@ -260,28 +262,27 @@ impl MdReaderApp {
         self.status_toast = Some((msg, Instant::now()));
     }
 
-    fn apply_theme(&self, ctx: &egui::Context) {
-        let sys_theme = match self.config.theme_mode {
-            ThemeMode::Dark => {
-                ctx.set_visuals(egui::Visuals::dark());
-                egui::SystemTheme::Dark
-            }
-            ThemeMode::Light => {
-                ctx.set_visuals(egui::Visuals::light());
-                egui::SystemTheme::Light
-            }
+    fn apply_theme(&mut self, ctx: &egui::Context) {
+        let (sys_theme, visuals) = match self.config.theme_mode {
+            ThemeMode::Dark => (egui::SystemTheme::Dark, egui::Visuals::dark()),
+            ThemeMode::Light => (egui::SystemTheme::Light, egui::Visuals::light()),
             ThemeMode::System => {
-                let is_light = ctx.system_theme() == Some(egui::Theme::Light);
-                if is_light {
-                    ctx.set_visuals(egui::Visuals::light());
-                    egui::SystemTheme::Light
+                if ctx.system_theme() == Some(egui::Theme::Light) {
+                    (egui::SystemTheme::Light, egui::Visuals::light())
                 } else {
-                    ctx.set_visuals(egui::Visuals::dark());
-                    egui::SystemTheme::Dark
+                    (egui::SystemTheme::Dark, egui::Visuals::dark())
                 }
             }
         };
+
+        let theme_state = (self.config.theme_mode, sys_theme);
+        if self.last_applied_theme == Some(theme_state) {
+            return;
+        }
+
+        ctx.set_visuals(visuals);
         ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(sys_theme));
+        self.last_applied_theme = Some(theme_state);
     }
 
     fn handle_shortcuts(&mut self, ui: &mut egui::Ui) {
