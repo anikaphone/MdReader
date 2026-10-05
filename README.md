@@ -9,6 +9,16 @@
 
 ---
 
+## 🖼️ 界面预览
+
+### 浅色模式
+
+![MdReader 浅色模式预览](assets/preview-light.png)
+
+### 深色模式
+
+![MdReader 深色模式预览](assets/preview-dark.png)
+
 ## 🌟 核心特色
 
 1. **秒级瞬时冷启动**：纯原生 Rust + egui 架构，无任何 Chromium / Electron / WebView2 运行时开销，冷启动耗时 < 50ms。
