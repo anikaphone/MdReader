@@ -43,13 +43,12 @@ impl FileWatcher {
             move |res: Result<Event, notify::Error>| {
                 if let Ok(event) = res {
                     match event.kind {
-                        EventKind::Modify(_) | EventKind::Create(_) => {
+                        EventKind::Modify(_) | EventKind::Create(_)
                             if event.paths.iter().any(|p| {
-                                p == &target_path
-                                    || p.file_name() == target_path.file_name()
-                            }) {
-                                let _ = tx.send(target_path.clone());
-                            }
+                                p == &target_path || p.file_name() == target_path.file_name()
+                            }) =>
+                        {
+                            let _ = tx.send(target_path.clone());
                         }
                         _ => {}
                     }
@@ -74,7 +73,7 @@ impl FileWatcher {
     /// Check if a reload is needed with 200ms debounce
     pub fn check_reload(&mut self) -> bool {
         let mut triggered = false;
-        while let Ok(_) = self.rx.try_recv() {
+        while self.rx.try_recv().is_ok() {
             triggered = true;
         }
 

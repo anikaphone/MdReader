@@ -161,7 +161,11 @@ mod tests {
                     parsed_heading_ids.push(id.map(|s| s.to_string()));
                 }
                 Event::Text(t) => {
-                    assert!(!t.contains("{#"), "Visible text contains anchor syntax: {}", t);
+                    assert!(
+                        !t.contains("{#"),
+                        "Visible text contains anchor syntax: {}",
+                        t
+                    );
                 }
                 _ => {}
             }
@@ -190,11 +194,19 @@ mod tests {
         for event in parser {
             match event {
                 Event::Start(Tag::Heading { id, .. }) => {
-                    assert!(id.is_some(), "Heading missing id in demo.md: count = {}", count);
+                    assert!(
+                        id.is_some(),
+                        "Heading missing id in demo.md: count = {}",
+                        count
+                    );
                     count += 1;
                 }
                 Event::Text(t) => {
-                    assert!(!t.contains("{#"), "Visible text in demo.md contains anchor syntax: {}", t);
+                    assert!(
+                        !t.contains("{#"),
+                        "Visible text in demo.md contains anchor syntax: {}",
+                        t
+                    );
                 }
                 _ => {}
             }
@@ -218,7 +230,11 @@ mod tests {
 
         for event in parser {
             if let Event::Text(t) = event {
-                assert!(!t.contains("{#"), "Anchor syntax leaked into heading text: {}", t);
+                assert!(
+                    !t.contains("{#"),
+                    "Anchor syntax leaked into heading text: {}",
+                    t
+                );
             }
         }
     }

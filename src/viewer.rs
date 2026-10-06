@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 
 use egui::{self, Color32, Id, TextStyle, Ui};
 use egui_commonmark_backend::elements::*;
+pub use egui_commonmark_backend::misc::CommonMarkCache;
 use egui_commonmark_backend::misc::*;
 use egui_commonmark_backend::pulldown::*;
-pub use egui_commonmark_backend::misc::CommonMarkCache;
 use pulldown_cmark::{CowStr, HeadingLevel};
 
 /// Resolves an image destination URL.
@@ -355,6 +355,7 @@ impl CommonMarkViewerInternal {
         (re, std::mem::take(&mut self.checkbox_events))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn process_event<'e>(
         &mut self,
         ui: &mut Ui,
@@ -646,7 +647,12 @@ impl CommonMarkViewerInternal {
         }
     }
 
-    fn push_or_show_label(&mut self, rich_text: egui::RichText, ui: &mut Ui, is_active_search: bool) {
+    fn push_or_show_label(
+        &mut self,
+        rich_text: egui::RichText,
+        ui: &mut Ui,
+        is_active_search: bool,
+    ) {
         if let Some(image) = &mut self.image {
             image.alt_text.push(rich_text);
         } else if let Some(block) = &mut self.code_block {
@@ -995,10 +1001,13 @@ fn render_custom_code_block(
     static THEME_SET: std::sync::LazyLock<syntect::highlighting::ThemeSet> =
         std::sync::LazyLock::new(syntect::highlighting::ThemeSet::load_defaults);
 
-    let theme = THEME_SET
-        .themes
-        .get(theme_name)
-        .or_else(|| THEME_SET.themes.get(if is_dark { "base16-ocean.dark" } else { "base16-ocean.light" }));
+    let theme = THEME_SET.themes.get(theme_name).or_else(|| {
+        THEME_SET.themes.get(if is_dark {
+            "base16-ocean.dark"
+        } else {
+            "base16-ocean.light"
+        })
+    });
 
     let bg_color = theme
         .and_then(|t| t.settings.background)
@@ -1023,7 +1032,11 @@ fn render_custom_code_block(
                             0.0,
                             egui::TextFormat::simple(
                                 TextStyle::Monospace.resolve(ui.style()),
-                                Color32::from_rgb(style.foreground.r, style.foreground.g, style.foreground.b),
+                                Color32::from_rgb(
+                                    style.foreground.r,
+                                    style.foreground.g,
+                                    style.foreground.b,
+                                ),
                             ),
                         );
                     }
@@ -1120,11 +1133,9 @@ fn render_custom_code_block(
     let persistent_id = ui.make_persistent_id(output.response.id);
     let copied_icon = ui.memory_mut(|m| *m.data.get_temp_mut_or_default::<bool>(persistent_id));
 
-    let mut button_ui = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(button_rect)
-            .layout(egui::Layout::centered_and_justified(egui::Direction::TopDown)),
-    );
+    let mut button_ui = ui.new_child(egui::UiBuilder::new().max_rect(button_rect).layout(
+        egui::Layout::centered_and_justified(egui::Direction::TopDown),
+    ));
     let copy_button = button_ui
         .add(
             egui::Button::new(egui::RichText::new(if copied_icon { "✔" } else { "🗐" }).size(14.0))
@@ -1196,17 +1207,24 @@ mod tests {
                     ];
                 });
                 for (text, expected_size) in expected_fonts {
-                    let galley = output.shapes.iter().find_map(|shape| {
-                        if let egui::Shape::Text(text_shape) = &shape.shape {
-                            if text_shape.galley.job.text == text {
-                                return Some(&text_shape.galley);
+                    let galley = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| {
+                            if let egui::Shape::Text(text_shape) = &shape.shape {
+                                if text_shape.galley.job.text == text {
+                                    return Some(&text_shape.galley);
+                                }
                             }
-                        }
-                        None
-                    }).unwrap_or_else(|| panic!("Missing rendered text: {text}"));
+                            None
+                        })
+                        .unwrap_or_else(|| panic!("Missing rendered text: {text}"));
                     for section in &galley.job.sections {
-                        assert!((section.format.font_id.size - expected_size).abs() < 0.01,
-                            "{text}: zoom={zoom}, expected={expected_size}, actual={}", section.format.font_id.size);
+                        assert!(
+                            (section.format.font_id.size - expected_size).abs() < 0.01,
+                            "{text}: zoom={zoom}, expected={expected_size}, actual={}",
+                            section.format.font_id.size
+                        );
                     }
                 }
                 assert_eq!(ctx.zoom_factor(), 1.0);
@@ -1219,14 +1237,20 @@ mod tests {
     fn test_resolve_image_url() {
         // Absolute http/https URLs should be kept as-is
         let http_url = "https://example.com/image.png";
-        assert_eq!(resolve_image_url(http_url, Some(Path::new("C:/docs"))), http_url);
+        assert_eq!(
+            resolve_image_url(http_url, Some(Path::new("C:/docs"))),
+            http_url
+        );
 
         // Relative path with base_dir
         let base = Path::new(r"C:\docs\sub");
         let rel_url = "images/pic.png";
         let resolved = resolve_image_url(rel_url, Some(base));
         if cfg!(windows) {
-            assert!(resolved.starts_with("file:///C:/docs/sub/images/pic.png") || resolved.starts_with("file:///"));
+            assert!(
+                resolved.starts_with("file:///C:/docs/sub/images/pic.png")
+                    || resolved.starts_with("file:///")
+            );
             assert!(resolved.ends_with("images/pic.png"));
         } else {
             assert!(resolved.starts_with("file://"));
@@ -1240,10 +1264,19 @@ mod tests {
         for (base, expected) in [
             (r"C:\docs", "file:///C:/docs/images/pic.png"),
             (r"\\?\C:\docs", "file:///C:/docs/images/pic.png"),
-            (r"\\server\share\docs", "file://server/share/docs/images/pic.png"),
-            (r"\\?\UNC\server\share\docs", "file://server/share/docs/images/pic.png"),
+            (
+                r"\\server\share\docs",
+                "file://server/share/docs/images/pic.png",
+            ),
+            (
+                r"\\?\UNC\server\share\docs",
+                "file://server/share/docs/images/pic.png",
+            ),
         ] {
-            assert_eq!(resolve_image_url("images/pic.png", Some(Path::new(base))), expected);
+            assert_eq!(
+                resolve_image_url("images/pic.png", Some(Path::new(base))),
+                expected
+            );
         }
     }
 
@@ -1251,11 +1284,10 @@ mod tests {
     fn test_local_image_loader_can_read_project_asset() {
         let ctx = egui::Context::default();
         egui_extras::install_image_loaders(&ctx);
-        let base_dir = Path::new(env!("CARGO_MANIFEST_DIR")).canonicalize().unwrap();
-        let uri = resolve_image_url(
-            "assets/preview-light.png",
-            Some(&base_dir),
-        );
+        let base_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .canonicalize()
+            .unwrap();
+        let uri = resolve_image_url("assets/preview-light.png", Some(&base_dir));
 
         let mut loaded = false;
         for _ in 0..200 {
@@ -1296,8 +1328,12 @@ mod tests {
                     Err(error) => panic!("HTTP test server failed: {error}"),
                 }
             };
-            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-            stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
             let mut request = [0; 4096];
             assert!(stream.read(&mut request).unwrap() > 0);
             let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="8"><rect width="16" height="8" fill="blue"/></svg>"#;
@@ -1329,18 +1365,22 @@ mod tests {
         let ctx = egui::Context::default();
         crate::setup_custom_fonts(&ctx);
         let mut cache = CommonMarkCache::default();
-        let base_dir = Path::new(env!("CARGO_MANIFEST_DIR")).canonicalize().unwrap();
+        let base_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .canonicalize()
+            .unwrap();
         let mut rendered_image = false;
         for _ in 0..200 {
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 ui.set_width(600.0);
-                CommonMarkViewer::new()
-                    .base_dir(Some(&base_dir))
-                    .show(ui, &mut cache, "![preview](assets/preview-light.png)");
+                CommonMarkViewer::new().base_dir(Some(&base_dir)).show(
+                    ui,
+                    &mut cache,
+                    "![preview](assets/preview-light.png)",
+                );
             });
-            rendered_image |= output.shapes.iter().any(|shape| {
-                matches!(&shape.shape, egui::Shape::Rect(rect) if rect.brush.is_some())
-            });
+            rendered_image |= output.shapes.iter().any(
+                |shape| matches!(&shape.shape, egui::Shape::Rect(rect) if rect.brush.is_some()),
+            );
             output.textures_delta.clear();
             if rendered_image {
                 break;
@@ -1403,7 +1443,11 @@ def calculate_memory_footprint():
                 let mut cache = CommonMarkCache::default();
                 let viewer = CommonMarkViewer::new();
                 let resp = viewer.show(ui, &mut cache, md);
-                assert!(resp.response.rect.height() > 300.0, "Response height should expand for all code blocks, got {}", resp.response.rect.height());
+                assert!(
+                    resp.response.rect.height() > 300.0,
+                    "Response height should expand for all code blocks, got {}",
+                    resp.response.rect.height()
+                );
             });
             out2.textures_delta.clear();
         });

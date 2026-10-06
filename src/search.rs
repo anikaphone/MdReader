@@ -52,12 +52,16 @@ impl SearchState {
                 Err(idx) => idx.saturating_sub(1),
             };
             let (line_num, line_start) = line_starts[line_idx];
-            let line_end = line_starts.get(line_idx + 1).map(|&(_, s)| s.saturating_sub(1)).unwrap_or(text.len());
-            let line_text = if line_start <= text.len() && line_end <= text.len() && line_start <= line_end {
-                text[line_start..line_end].trim().to_string()
-            } else {
-                String::new()
-            };
+            let line_end = line_starts
+                .get(line_idx + 1)
+                .map(|&(_, s)| s.saturating_sub(1))
+                .unwrap_or(text.len());
+            let line_text =
+                if line_start <= text.len() && line_end <= text.len() && line_start <= line_end {
+                    text[line_start..line_end].trim().to_string()
+                } else {
+                    String::new()
+                };
             (line_num, line_text)
         };
 
@@ -82,10 +86,7 @@ impl SearchState {
                 Event::End(TagEnd::CodeBlock) => {
                     in_code_block = false;
                 }
-                Event::Text(t)
-                | Event::Code(t)
-                | Event::InlineHtml(t)
-                | Event::Html(t)
+                Event::Text(t) | Event::Code(t) | Event::InlineHtml(t) | Event::Html(t)
                     if !in_image && !in_code_block =>
                 {
                     for (match_start, _) in find_matches_in_text(&t, query_trimmed) {
@@ -110,8 +111,6 @@ impl SearchState {
             self.current_match = 0;
         }
     }
-
-
 
     pub fn next(&mut self) -> bool {
         if !self.matches.is_empty() {
@@ -281,8 +280,10 @@ mod tests {
     #[test]
     fn test_search_and_ratio() {
         let doc = "# Title\n\nSome introductory text.\n\n## Section 1\nRust is awesome.\n\n## Section 2\nRust runs fast.\n";
-        let mut search = SearchState::default();
-        search.query = "Rust".to_string();
+        let mut search = SearchState {
+            query: "Rust".to_string(),
+            ..Default::default()
+        };
         search.update(doc);
 
         assert_eq!(search.matches.len(), 2);
@@ -293,7 +294,12 @@ mod tests {
         assert!(search.next());
         let ratio1 = search.current_match_ratio(doc);
 
-        assert!(ratio0 < ratio1, "Expected ratio0 ({}) < ratio1 ({})", ratio0, ratio1);
+        assert!(
+            ratio0 < ratio1,
+            "Expected ratio0 ({}) < ratio1 ({})",
+            ratio0,
+            ratio1
+        );
     }
 
     #[test]
@@ -325,8 +331,10 @@ mod tests {
     #[test]
     fn test_search_visible_text_only() {
         let doc = "Check out [Rust](https://rust-lang.org) and ![Rust Logo](images/rust.png).\n\n```rust\nfn rust_test() {}\n```\n";
-        let mut search = SearchState::default();
-        search.query = "rust".to_string();
+        let mut search = SearchState {
+            query: "rust".to_string(),
+            ..Default::default()
+        };
         search.update(doc);
 
         // Only the visible link text "[Rust]" should match!
@@ -338,8 +346,10 @@ mod tests {
     #[test]
     fn test_search_html_block_text() {
         let doc = "<div>Rust content</div>\n";
-        let mut search = SearchState::default();
-        search.query = "rust".to_string();
+        let mut search = SearchState {
+            query: "rust".to_string(),
+            ..Default::default()
+        };
         search.update(doc);
 
         assert_eq!(search.matches.len(), 1);

@@ -1,17 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ThemeMode {
+    #[default]
     System,
     Dark,
     Light,
-}
-
-impl Default for ThemeMode {
-    fn default() -> Self {
-        ThemeMode::System
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

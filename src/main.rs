@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod default_app;
+mod editor;
 mod search;
 mod toc;
 mod viewer;
@@ -17,10 +18,10 @@ fn setup_custom_fonts(ctx: &egui::Context) {
 
     // Check system Chinese fonts on Windows
     let candidate_fonts = [
-        r"C:\Windows\Fonts\msyh.ttc",    // 微软雅黑
+        r"C:\Windows\Fonts\msyh.ttc", // 微软雅黑
         r"C:\Windows\Fonts\msyh.ttf",
-        r"C:\Windows\Fonts\simsun.ttc",  // 宋体
-        r"C:\Windows\Fonts\simhei.ttf",  // 黑体
+        r"C:\Windows\Fonts\simsun.ttc", // 宋体
+        r"C:\Windows\Fonts\simhei.ttf", // 黑体
     ];
 
     let mut loaded_font_name = None;
