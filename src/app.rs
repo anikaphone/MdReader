@@ -490,7 +490,10 @@ impl MdReaderApp {
         let (theme_preference, window_theme) = match self.config.theme_mode {
             ThemeMode::Dark => (egui::ThemePreference::Dark, egui::SystemTheme::Dark),
             ThemeMode::Light => (egui::ThemePreference::Light, egui::SystemTheme::Light),
-            ThemeMode::System => (egui::ThemePreference::System, egui::SystemTheme::SystemDefault),
+            ThemeMode::System => (
+                egui::ThemePreference::System,
+                egui::SystemTheme::SystemDefault,
+            ),
         };
         ctx.set_theme(theme_preference);
         ctx.set_visuals(visuals);
@@ -1342,12 +1345,7 @@ impl eframe::App for MdReaderApp {
                                 .search(search_query, active_match);
 
                             let available_width = ui.available_width();
-                            let max_content_width = 880.0;
-                            let horizontal_margin = if available_width > max_content_width + 80.0 {
-                                (available_width - max_content_width) / 2.0
-                            } else {
-                                42.0 // 左右保留至少 42px 的舒适阅读留白
-                            };
+                            let horizontal_margin = content_horizontal_margin(available_width);
 
                             ui.horizontal(|ui| {
                                 ui.add_space(horizontal_margin);
@@ -1370,12 +1368,7 @@ impl eframe::App for MdReaderApp {
                     }
                     ViewMode::Editing => {
                         let available_width = ui.available_width();
-                        let max_content_width = 880.0;
-                        let horizontal_margin = if available_width > max_content_width + 80.0 {
-                            (available_width - max_content_width) / 2.0
-                        } else {
-                            42.0
-                        };
+                        let horizontal_margin = content_horizontal_margin(available_width);
 
                         let scroll_output = egui::ScrollArea::vertical()
                             .auto_shrink([false, false])
@@ -1389,6 +1382,15 @@ impl eframe::App for MdReaderApp {
                                         ui.set_width(content_width);
                                         ui.add_space(18.0);
 
+                                        // The reading viewer scales its local style before
+                                        // rendering. Apply the same document zoom to the editor
+                                        // font so Ctrl+/- and Ctrl+wheel behave consistently in
+                                        // both modes without changing the app chrome.
+                                        let editor_font =
+                                            egui::TextStyle::Monospace.resolve(ui.style());
+                                        let editor_font = egui::FontId::monospace(
+                                            editor_font.size * self.config.zoom_factor,
+                                        );
                                         let text_edit =
                                             egui::TextEdit::multiline(&mut self.file_content)
                                                 .id_salt((
@@ -1397,7 +1399,7 @@ impl eframe::App for MdReaderApp {
                                                 ))
                                                 .desired_width(content_width)
                                                 .desired_rows(30)
-                                                .font(egui::TextStyle::Monospace)
+                                                .font(editor_font)
                                                 .lock_focus(true);
 
                                         let resp = ui.add(text_edit);
@@ -1614,6 +1616,12 @@ fn display_path(path: &Path) -> String {
     } else {
         path.into_owned()
     }
+}
+
+/// Keep a small reading gutter while allowing the document to use all extra
+/// horizontal space when the window is widened or maximized.
+fn content_horizontal_margin(available_width: f32) -> f32 {
+    42.0_f32.min((available_width / 2.0).max(0.0))
 }
 
 fn title_bar_layout(available_width: f32) -> (f32, f32, bool) {
