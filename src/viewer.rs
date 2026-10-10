@@ -950,6 +950,15 @@ impl CommonMarkViewerInternal {
             let id = ui.id().with("_code_block").with(self.curr_code_block);
             self.curr_code_block += 1;
 
+            if is_mermaid_language(block.lang.as_deref()) {
+                ui.vertical(|ui| {
+                    ui.set_width(max_width);
+                    render_mermaid_block(ui, max_width, &block.content, self.zoom_factor);
+                });
+                self.line.try_insert_end(ui);
+                return;
+            }
+
             ui.scope(|ui| {
                 // Code lines keep their natural width. The local horizontal scroll area
                 // prevents a long line from changing the document's wrapping width.
@@ -1172,9 +1181,148 @@ fn render_custom_code_block(
     }
 }
 
+fn is_mermaid_language(lang: Option<&str>) -> bool {
+    lang.is_some_and(|value| {
+        value.split_ascii_whitespace().next().is_some_and(|name| {
+            name.eq_ignore_ascii_case("mermaid") || name.eq_ignore_ascii_case("mmd")
+        })
+    })
+}
+
+#[derive(Clone)]
+struct MermaidEntry {
+    source: String,
+    dark: bool,
+    uri: String,
+    svg: Result<std::sync::Arc<[u8]>, String>,
+}
+
+fn mermaid_svg(ctx: &egui::Context, content: &str, dark: bool) -> MermaidEntry {
+    use std::hash::{Hash, Hasher};
+    type Cache = std::collections::VecDeque<MermaidEntry>;
+    let id = egui::Id::new("mermaid_svg_cache");
+    let mut cache = ctx
+        .data_mut(|data| data.get_temp::<Cache>(id))
+        .unwrap_or_default();
+    if let Some(index) = cache
+        .iter()
+        .position(|entry| entry.source == content && entry.dark == dark)
+    {
+        let entry = cache.remove(index).unwrap();
+        cache.push_back(entry.clone());
+        ctx.data_mut(|data| data.insert_temp(id, cache));
+        return entry;
+    }
+    let mut theme = if dark {
+        mermaid_rs_renderer::Theme::dark()
+    } else {
+        mermaid_rs_renderer::Theme::modern()
+    };
+    theme.font_family = "Microsoft YaHei, Segoe UI, sans-serif".to_owned();
+    let options = mermaid_rs_renderer::RenderOptions {
+        theme,
+        layout: mermaid_rs_renderer::LayoutConfig::default(),
+    };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    content.hash(&mut hasher);
+    dark.hash(&mut hasher);
+    let entry = MermaidEntry {
+        source: content.to_owned(),
+        dark,
+        uri: format!("bytes://mdreader-mermaid-{:x}.svg", hasher.finish()),
+        svg: mermaid_rs_renderer::render_with_options(content, options)
+            .map(|svg| std::sync::Arc::from(svg.into_bytes()))
+            .map_err(|error| error.to_string()),
+    };
+    if cache.len() >= 32 {
+        if let Some(old) = cache.pop_front() {
+            ctx.forget_image(&old.uri);
+        }
+    }
+    cache.push_back(entry.clone());
+    ctx.data_mut(|data| data.insert_temp(id, cache));
+    entry
+}
+
+fn render_mermaid_block(ui: &mut Ui, max_width: f32, content: &str, zoom: f32) {
+    let entry = mermaid_svg(ui.ctx(), content, ui.visuals().dark_mode);
+    match entry.svg {
+        Ok(svg) => {
+            ui.add(
+                egui::Image::from_bytes(entry.uri, svg)
+                    .fit_to_original_size(zoom)
+                    .max_width(max_width),
+            );
+            ui.collapsing("Mermaid 源码", |ui| {
+                if ui.button("复制源码").clicked() {
+                    ui.copy_text(content.to_owned());
+                }
+                ui.add(egui::Label::new(egui::RichText::new(content).monospace()).wrap());
+            });
+        }
+        Err(error) => {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                format!("Mermaid 渲染失败：{error}"),
+            );
+            ui.add(egui::Label::new(egui::RichText::new(content).monospace()).wrap());
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_mermaid_cache_theme_source_and_errors() {
+        let ctx = egui::Context::default();
+        let source = "flowchart LR\n A[开始] --> B{判断}\n B -->|是| C[完成]";
+        let first = mermaid_svg(&ctx, source, false);
+        let second = mermaid_svg(&ctx, source, false);
+        assert!(std::sync::Arc::ptr_eq(
+            first.svg.as_ref().unwrap(),
+            second.svg.as_ref().unwrap()
+        ));
+        let dark = mermaid_svg(&ctx, source, true);
+        assert_ne!(first.uri, dark.uri);
+        assert_ne!(first.svg, dark.svg);
+        assert_ne!(first.uri, mermaid_svg(&ctx, "graph TD; A-->C", false).uri);
+        assert!(mermaid_svg(&ctx, "not_a_diagram", false).svg.is_err());
+        assert!(is_mermaid_language(Some("Mermaid")));
+        assert!(is_mermaid_language(Some("mmd")));
+        assert!(!is_mermaid_language(Some("rust")));
+    }
+
+    #[test]
+    fn test_mermaid_fence_renders_image_at_zoom_and_narrow_width() {
+        let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
+        let mut cache = CommonMarkCache::default();
+        let mut widths = Vec::new();
+        for (zoom, width) in [(1.0, 800.0), (2.0, 800.0), (2.0, 180.0)] {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(width);
+                CommonMarkViewer::new().zoom_factor(zoom).show(
+                    ui,
+                    &mut cache,
+                    "```mermaid\nflowchart LR\n A[开始] --> B[完成]\n```",
+                );
+            });
+            let rect = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect) if rect.brush.is_some() => Some(rect.rect),
+                    _ => None,
+                })
+                .expect("Mermaid fence should paint an SVG image");
+            assert!(rect.width() <= width + 0.01);
+            widths.push(rect.width());
+            output.textures_delta.clear();
+        }
+        assert!(widths[1] > widths[0] * 1.5);
+        assert!(widths[2] < widths[1]);
+    }
 
     #[test]
     fn test_document_zoom_scales_text_without_changing_chrome() {
@@ -1328,6 +1476,8 @@ mod tests {
                     Err(error) => panic!("HTTP test server failed: {error}"),
                 }
             };
+            // Accepted sockets can inherit nonblocking mode on Windows.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();

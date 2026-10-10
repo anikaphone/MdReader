@@ -1,5 +1,23 @@
 # MdReader (极速轻量 Markdown 查看器)
 
+## Mermaid 图表
+
+阅读模式会将标记为 `mermaid`（也接受 `mmd`）的围栏代码块显示为图表。
+例如：
+
+````markdown
+```mermaid
+flowchart LR
+    A[开始] --> B{判断}
+    B -->|是| C[完成]
+```
+````
+
+可打开 `mermaid-demo.md` 查看中文流程图和时序图。图表随浅色/深色主题及文档缩放更新，
+宽度限制在内容区域内；可展开源码并复制。编辑模式保留原始 Markdown。
+使用纯 Rust 的 `mermaid-rs-renderer` 离线生成 SVG，无需浏览器或 Node.js。
+这是 Mermaid 的独立实现，并非官方 Mermaid.js 的完整兼容层；不支持的语法或解析错误会显示错误提示及源码。
+
 专为 Windows 平台打造的**极速秒启动、极低内存占用、纯原生** Markdown 文档阅读器。
 
 ![Platform](https://img.shields.io/badge/Platform-Windows%20x64-blue)
